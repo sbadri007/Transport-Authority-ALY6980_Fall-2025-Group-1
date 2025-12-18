@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  # Observability
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: mbta-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_DB=mbta_logs
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=clickhouse
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - mbta-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: mbta-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    volumes:
+      - ./docker/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    networks:
+      - mbta-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: mbta-jaeger
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - mbta-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mbta-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - mbta-network
+
+  # Application Services
+  exchange-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.exchange
+    container_name: mbta-exchange-agent
+    ports:
+      - "8100:8100"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ORCHESTRATOR_URL=http://mbta-orchestrator:8101  
+
+    networks:
+      - mbta-network
+    depends_on:
+      - otel-collector
+      - clickhouse
+      - orchestrator
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.orchestrator
+    container_name: mbta-orchestrator
+    ports:
+      - "8101:8101"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - AGENT_ALERTS_URL=http://mbta-alerts-agent:8001  
+      - AGENT_PLANNER_URL=http://mbta-planner-agent:8002
+      - AGENT_STOPS_URL=http://mbta-stopfinder-agent:8003
+    networks:
+      - mbta-network
+    depends_on:
+      - otel-collector
+      - clickhouse
+      - alerts-agent
+      - planner-agent
+      - stopfinder-agent
+
+  alerts-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    container_name: mbta-alerts-agent
+    ports:
+      - "8001:8001"
+    command: ["python", "-m", "uvicorn", "src.agents.alerts.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    networks:
+      - mbta-network
+
+  planner-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    container_name: mbta-planner-agent
+    ports:
+      - "8002:8002"
+    command: ["python", "-m", "uvicorn", "src.agents.planner.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    networks:
+      - mbta-network
+
+  stopfinder-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    container_name: mbta-stopfinder-agent
+    ports:
+      - "8003:8003"
+    command: ["python", "-m", "uvicorn", "src.agents.stopfinder.main:app", "--host", "0.0.0.0", "--port", "8003"]
+    networks:
+      - mbta-network
+
+networks:
+  mbta-network:
+    driver: bridge
+
+volumes:
+  clickhouse-data:
+  grafana-data:

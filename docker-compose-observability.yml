@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # ClickHouse - Fast analytics database
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: mbta-clickhouse
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # Native interface
+    environment:
+      - CLICKHOUSE_DB=mbta_logs
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=clickhouse
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./observability/clickhouse-init:/docker-entrypoint-initdb.d
+    networks:
+      - mbta-observability
+    restart: unless-stopped
+
+  # Grafana - Visualization platform
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mbta-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - mbta-observability
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: mbta-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8889:8889"   # Prometheus exporter
+    volumes:
+      - ./docker/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    networks:
+      - mbta-observability
+    restart: unless-stopped
+
+  # Jaeger - Distributed Tracing UI
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: mbta-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14250:14250" 
+
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+    networks:
+      - mbta-observability
+    restart: unless-stopped
+
+networks:
+  mbta-observability:
+    driver: bridge
+
+volumes:
+  clickhouse-data:
+  grafana-data:
